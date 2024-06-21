@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <cstring>
 #include <fstream>
+#include <random>
 
 struct sConfig
 {
@@ -15,6 +16,7 @@ struct sConfig
     uint32_t maxIterations;
     int maxWorkers;
     int tokenPairLimit;
+    int tokenPairSampleNum;
 };
 
 struct sToken
@@ -33,9 +35,9 @@ struct sTokenBufferPage
 
 sConfig *parseConfig(int argc, const char *argv[])
 {
-    if (argc != 5)
+    if (argc != 6)
     {
-        std::cerr << "Usage: " << argv[0] << " <initialMaxTokens> <expectedMaxTokens> <maxIterations> <tokenPairLimit>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <initialMaxTokens> <expectedMaxTokens> <maxIterations> <tokenPairLimit> <tokenPairSampleNum>" << std::endl;
         exit(1);
     }
 
@@ -44,6 +46,7 @@ sConfig *parseConfig(int argc, const char *argv[])
     config->expectedMaxTokens = std::stoi(argv[2]);
     config->maxIterations = std::stoi(argv[3]);
     config->tokenPairLimit = std::stoi(argv[4]);
+    config->tokenPairSampleNum = std::stoi(argv[5]);
     config->maxWorkers = std::thread::hardware_concurrency() - 1;
 
     // Print config
@@ -51,10 +54,11 @@ sConfig *parseConfig(int argc, const char *argv[])
     std::cout << "expectedMaxTokens: " << config->expectedMaxTokens << std::endl;
     std::cout << "maxIterations: " << config->maxIterations << std::endl;
     std::cout << "tokenPairLimit: " << config->tokenPairLimit << std::endl;
+    std::cout << "tokenPairSampleNum: " << config->tokenPairSampleNum << std::endl;
 
     return config;
 }
-void saveVocabulary(sToken **tokenTable, std::map<std::vector<uint32_t>, uint32_t> *tokenRMap, long tokenTableSize, int iteration)
+void saveVocabulary(sToken **tokenTable, std::map<std::vector<uint32_t>, uint32_t> *tokenRMap, long tokenTableSize, int iteration, bool printFreq=false)
 {
     uint32_t totalTokensAct = 0;
     for (long i = 0; i < tokenTableSize; i++)
@@ -70,7 +74,7 @@ void saveVocabulary(sToken **tokenTable, std::map<std::vector<uint32_t>, uint32_
         if (tokenTable[newtoken] && tokenTable[newtoken]->freq > 0)
         {
             f << tokenCnt;
-            f << " " << tokenTable[newtoken]->freq;
+            if (printFreq) f << " " << tokenTable[newtoken]->freq;
             for (auto &ot : it.first)
                 f << " " << ot;
             f << std::endl;
@@ -109,11 +113,29 @@ void printMaxFreqNTokens(sToken **tokenTable, long tokenTableSize, long n)
     }
 }
 
-void updateTokenBuffer(int rank, sTokenBufferPage *buffer, long totalPage, std::unordered_map<uint64_t, long> *tokenPairMap, uint64_t *tokenPairReplace, uint32_t tokenPairReplaceToken, int tokenPairLimit)
+void updateTokenBuffer(
+    int rank, 
+    sTokenBufferPage *buffer, 
+    long totalPage, 
+    std::unordered_map<uint64_t, long> *tokenPairMap, 
+    uint64_t *tokenPairReplace, 
+    uint32_t tokenPairReplaceToken, 
+    int tokenPairLimit,
+    long tokenNumPage,
+    int tokenPairSampleNum,
+    long* tokenReplaceCnt
+    )
 {
-
     sTokenBufferPage *page = buffer;
     long pageCnt = 0;
+
+    std::random_device dev;
+    std::mt19937 rng(dev());
+
+    int sampleGap = tokenNumPage / tokenPairSampleNum;
+    if (sampleGap <= 0) sampleGap = 1;
+    std::uniform_int_distribution<std::mt19937::result_type> distGap(0,sampleGap); // distribution in range [1, 6]
+    long sampleCnt = distGap(rng);
 
     if (tokenPairReplace)
     {
@@ -131,6 +153,7 @@ void updateTokenBuffer(int rank, sTokenBufferPage *buffer, long totalPage, std::
                     if (i < (page->size - 2))
                         std::memcpy(page->data + i + 1, page->data + i + 2, (page->size - i - 2) * sizeof(uint32_t));
                     page->size--;
+                    (*tokenReplaceCnt)++;
                 }
             }
             if (rank == 0)
@@ -147,6 +170,9 @@ void updateTokenBuffer(int rank, sTokenBufferPage *buffer, long totalPage, std::
     {
         for (long i = 0; i < page->size - 1; i++)
         {
+            sampleCnt++;
+            if (sampleCnt % sampleGap != 0) continue;
+
             uint64_t *tokenPair = (uint64_t *)(page->data + i);
             if (tokenPairMap->find(*tokenPair) == tokenPairMap->end())
                 (*tokenPairMap)[*tokenPair] = 1;
@@ -161,7 +187,6 @@ void updateTokenBuffer(int rank, sTokenBufferPage *buffer, long totalPage, std::
 
     // Get top k token pair
     std::multimap<long, uint64_t> freqMap;
-
     for (auto &it : *tokenPairMap)
     {
         freqMap.insert({it.second, it.first});
@@ -282,6 +307,7 @@ int main(int argc, const char *argv[])
     std::unordered_map<uint64_t, long> tokenPairFreqMap[config->maxWorkers];
     sTokenBufferPage *tokensBuffer[config->maxWorkers];
     long totalPages[config->maxWorkers];
+    long tokenNumWorker[config->maxWorkers];
     std::memset(totalPages, 0, sizeof(long) * config->maxWorkers);
 
     std::cout << "Read tokens files" << std::endl;
@@ -296,11 +322,14 @@ int main(int argc, const char *argv[])
     {
         workers[i]->join();
         auto page = tokensBuffer[i];
+        long totalTokensWorker = 0;
         while (page)
         {
-            totalTokens += page->size;
+            totalTokensWorker += page->size;
             page = page->next;
         }
+        totalTokens += totalTokensWorker;
+        tokenNumWorker[i] = totalTokensWorker;
 
         delete workers[i];
     }
@@ -312,11 +341,13 @@ int main(int argc, const char *argv[])
 
     std::cout << " Total tokens: " << totalTokens << std::endl;
     printMaxFreqNTokens(tokenFreqTable, tokenTableSize, 10);
-    saveVocabulary(tokenFreqTable, &tokenRMap, tokenTableSize, 0);
+    saveVocabulary(tokenFreqTable, &tokenRMap, tokenTableSize, 0, true);
 
     uint64_t tokenPairReplace = 0;
     uint32_t tokenPairReplaceToken = 0;
     std::unordered_map<uint64_t, long> tokenPairFreqMapMerged;
+    long tokenReplaceCnt[config->maxWorkers];
+    long curTokens = totalTokens;
     for (int i = 0; i < config->maxIterations; i++)
     {
 
@@ -324,6 +355,7 @@ int main(int argc, const char *argv[])
         // Find token pair to replace
         for (int j = 0; j < config->maxWorkers; j++)
         {
+            tokenReplaceCnt[j] = 0;
             workers[j] = new std::thread(
                 updateTokenBuffer,
                 j,
@@ -332,13 +364,18 @@ int main(int argc, const char *argv[])
                 tokenPairFreqMap + j,
                 i == 0 ? nullptr : &tokenPairReplace,
                 tokenPairReplaceToken,
-                config->tokenPairLimit);
+                config->tokenPairLimit,
+                tokenNumWorker[j],
+                config->tokenPairSampleNum,
+                &tokenReplaceCnt[j]
+                );
         }
 
         for (int j = 0; j < config->maxWorkers; j++)
         {
             workers[j]->join();
             delete workers[j];
+            curTokens -= tokenReplaceCnt[j];
         }
 
         // Merge token pair freq map
@@ -397,7 +434,7 @@ int main(int argc, const char *argv[])
                 totalTokensAct++;
 
         saveVocabulary(tokenFreqTable, &tokenRMap, tokenTableSize, i + 1);
-        std::cout << "************************ End iteration " << i << " ************************" << std::endl;
+        std::cout << "************************ End iteration " << i << " " << (double)curTokens / (double)totalTokens << " ************************" << std::endl;
     }
 
     // Free memory
