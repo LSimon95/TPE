@@ -1,17 +1,20 @@
-from ctypes import cdll, c_char_p, c_int, POINTER, Structure
+from ctypes import cdll, c_char_p, c_int, POINTER
 
 class TPE(object):
     def __init__(self, libtpe_path : str, vocab_path : str):
         self.lib = cdll.LoadLibrary(libtpe_path)
+
+        self.lib.tpe_new.restype = POINTER(c_int)
+
         self.obj = self.lib.tpe_new(c_char_p(vocab_path.encode("utf-8")))
 
         self.lib.free_ptr.argtypes = (POINTER(c_int),)
         self.lib.free_ptr.restype = None
 
-        self.lib.tpe_st2at.argtypes = (c_int, POINTER(c_int), c_int, c_int)
+        self.lib.tpe_st2at.argtypes = (POINTER(c_int), POINTER(c_int), c_int, c_int)
         self.lib.tpe_st2at.restype = POINTER(c_int)
 
-        self.lib.tpe_at2st.argtypes = (c_int, POINTER(c_int), c_int, c_int)
+        self.lib.tpe_at2st.argtypes = (POINTER(c_int), POINTER(c_int), c_int, c_int)
         self.lib.tpe_at2st.restype = POINTER(c_int)
 
     def __del__(self):

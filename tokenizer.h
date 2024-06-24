@@ -68,6 +68,8 @@ class TPE{
                 }
                 node->token = it->first;
             }
+
+            std::cout << "vocab size " << m_st2ats.size() << std::endl;
         };
 
         void deleteATNode(ATNode* node) {
