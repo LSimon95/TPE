@@ -275,8 +275,13 @@ int main(int argc, const char *argv[])
     std::vector<std::string> originTokensFiles;
     for (const auto &entry : std::filesystem::directory_iterator("./tokens"))
     {
-        originTokensFiles.push_back(entry.path().string());
-        std::cout << entry.path() << std::endl;
+        std::string filename = entry.path().string();
+        if (filename.find("_nikacodec_0_train.tokens") != std::string::npos) {
+            originTokensFiles.push_back(filename);
+            std::string filename_valid = filename.substr(0, filename.find("_nikacodec_0_train.tokens"));
+            filename_valid += "_nikacodec_0_valid.tokens";
+            originTokensFiles.push_back(filename_valid);
+        }
     }
 
     config->maxWorkers = std::min(config->maxWorkers, (int)originTokensFiles.size());
