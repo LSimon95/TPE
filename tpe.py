@@ -13,6 +13,9 @@ class TPE(object):
 
         self.lib.tpe_st2at.argtypes = (POINTER(c_int), POINTER(c_int), c_int, c_int)
         self.lib.tpe_st2at.restype = POINTER(c_int)
+        
+        self.lib.n_at_per_st.argtypes = (POINTER(c_int), POINTER(c_int), c_int)
+        self.lib.n_at_per_st.restype = POINTER(c_int)
 
         self.lib.tpe_at2st.argtypes = (POINTER(c_int), POINTER(c_int), c_int, c_int)
         self.lib.tpe_at2st.restype = POINTER(c_int)
@@ -35,6 +38,21 @@ class TPE(object):
         self.lib.free_ptr(at)
         return at_list
 
+    def n_at_per_st(self, st : list[int]):
+        if len(st) == 0:
+            return []
+
+        st = (c_int * len(st))(*st)
+        n_at = self.lib.n_at_per_st(self.obj, st, len(st))
+
+        # copy the result to a list
+        n_at_list = []
+        for i in range(len(st)):
+            n_at_list.append(n_at[i])
+
+        self.lib.free_ptr(n_at)
+        return n_at_list
+
     def at2st(self, at : list[int], max_len : int = 16384):
         if len(at) == 0:
             return []
@@ -50,16 +68,15 @@ class TPE(object):
         self.lib.free_ptr(st)
         return st_list
 
-
 if __name__ == "__main__":
 
     import random
     import time
-    tpe = TPE("/home/qanpan.lo/ds1/TPE/libtpe.so", "/home/qanpan.lo/52271.txt")
+    tpe = TPE("./libtpe.so", "/workspace/vocabulary_5000_v2.txt")
 
     while True:
 
-        stfake = [random.randint(0, 64000 + 52271 - 1) for _ in range(random.randint(0, 4599))]
+        stfake = [random.randint(0, 64000) for _ in range(random.randint(0, 4599))]
         at = tpe.st2at(stfake)
 
         # print(at)
@@ -69,14 +86,20 @@ if __name__ == "__main__":
         print("--- %s seconds ---" % (time.time() - start_time))
         print("--- ST Token length: %d ---" % len(st))
 
-
         start_time = time.time()
         at_decode = tpe.st2at(st)
         print("--- %s seconds ---" % (time.time() - start_time))
         print("--- AT Token length: %d ---" % len(at_decode))
+        
+        start_time = time.time()
+        n_at_per_st = tpe.n_at_per_st(st)
+        print("--- %s seconds ---" % (time.time() - start_time))
+        print("--- N AT per ST length: %d ---" % len(n_at_per_st))
 
         # print(at)
         # print(st)
+        # print(n_at_per_st)
+
 
         if at != at_decode:
             print("Error")

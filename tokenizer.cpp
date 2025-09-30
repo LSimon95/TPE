@@ -19,6 +19,20 @@ extern "C" {
         return at;
     }
 
+    int* n_at_per_st(TPE* tpe, int* st, int size) {
+        int* numbers = new int[size];
+
+        for (int i = 0; i < size; i++) {
+            auto it = tpe->m_st2ats.find(st[i]);
+            if (it == tpe->m_st2ats.end()) {
+                numbers[i] = 0;
+                continue;
+            }
+            numbers[i] = it->second->size;
+        }
+        return numbers;
+    }
+
     int* tpe_at2st(TPE* tpe, int*at, int size, int max_tokens) {
         int* st = new int[max_tokens];
         int* st_size = st;
